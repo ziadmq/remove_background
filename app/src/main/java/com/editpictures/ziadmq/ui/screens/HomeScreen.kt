@@ -1,88 +1,59 @@
 package com.editpictures.ziadmq.ui.screens
 
 import android.graphics.Bitmap
-import android.graphics.ImageDecoder
-import android.os.Build
-import android.provider.MediaStore
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue // IMPORT REQUIRED for 'by'
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.editpictures.ziadmq.ui.viewmodel.BgViewModel
 
 @Composable
-fun HomeScreen(viewModel: BgViewModel, onDone: (Bitmap) -> Unit) {
-
-    // 1. Get Context safely outside the callback
+fun HomeScreen(onImagePicked: (Bitmap) -> Unit) {
     val context = LocalContext.current
 
-    val launcher = rememberLauncherForActivityResult(
+    // Standard Gallery Picker
+    val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri ->
+    ) { uri: Uri? ->
         if (uri != null) {
             try {
-                // 2. Safe Image Loading (Fixes the crash)
-                val bitmap = if (Build.VERSION.SDK_INT >= 28) {
-                    val source = ImageDecoder.createSource(context.contentResolver, uri)
-                    ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
-                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                        decoder.isMutableRequired = true
-                    }
-                } else {
-                    @Suppress("DEPRECATION")
-                    MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+                context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    val bitmap = BitmapFactory.decodeStream(inputStream)
+                    onImagePicked(bitmap)
                 }
-
-                // 3. Send to ViewModel
-                viewModel.startRemove(bitmap)
-
             } catch (e: Exception) {
-                e.printStackTrace()
-                Toast.makeText(context, "Error loading image", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Failed to load image", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    // 4. Observe the state properly
-    val state by viewModel.state.collectAsState()
-
     Column(
         modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-
-        Spacer(Modifier.height(20.dp))
-        Button(onClick = { launcher.launch("image/*") }) {
-            Text("Choose Image")
-        }
-
-        Spacer(Modifier.height(20.dp))
-
-        when (state) {
-            is BgViewModel.UiState.Loading -> CircularProgressIndicator()
-            is BgViewModel.UiState.Success -> {
-                val output = (state as BgViewModel.UiState.Success).bitmap
-                onDone(output)
-            }
-            is BgViewModel.UiState.Error -> {
-                // Show the specific error message from the ViewModel
-                val errorMsg = (state as BgViewModel.UiState.Error).message
-                Text("Error: $errorMsg")
-            }
-            else -> Unit
+        Icon(
+            imageVector = Icons.Default.AddPhotoAlternate,
+            contentDescription = null,
+            modifier = Modifier.size(100.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        Button(
+            onClick = { galleryLauncher.launch("image/*") },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFBB86FC))
+        ) {
+            Text("Pick Photo", color = Color.Black)
         }
     }
 }
