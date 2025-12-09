@@ -6,11 +6,9 @@ plugins {
 
 android {
     namespace = "com.editpictures.ziadmq"
-    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.editpictures.ziadmq"
-        minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
@@ -42,7 +40,6 @@ android {
 }
 
 dependencies {
-    implementation("com.github.naishe:rembg-android:8cf43cfa4a")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("io.coil-kt:coil-compose:2.5.0")
 

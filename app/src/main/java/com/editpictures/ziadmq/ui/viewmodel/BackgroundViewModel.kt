@@ -1,16 +1,12 @@
 package com.editpictures.ziadmq.ui.viewmodel
 
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
+import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import android.graphics.Bitmap
-import androidx.lifecycle.viewModelScope
 import com.editpictures.ziadmq.data.ImageProcessor
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 class BgViewModel(private val processor: ImageProcessor) : ViewModel() {
 
@@ -29,10 +25,11 @@ class BgViewModel(private val processor: ImageProcessor) : ViewModel() {
             _state.value = UiState.Loading
 
             try {
+                // This calls the new ML Kit processor
                 val result = processor.removeBackground(bg)
                 _state.value = UiState.Success(result)
             } catch (e: Exception) {
-                _state.value = UiState.Error(e.message ?: "Error")
+                _state.value = UiState.Error(e.message ?: "Unknown Error")
             }
         }
     }
