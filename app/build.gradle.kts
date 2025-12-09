@@ -3,16 +3,15 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
 android {
     namespace = "com.editpictures.ziadmq"
-
-    // ADD OR CHECK THIS LINE:
-    compileSdk = 36
+    compileSdk = 36 // CHANGE THIS from 36 to 35 to match targetSdk
 
     defaultConfig {
         applicationId = "com.editpictures.ziadmq"
-        minSdk = 28
-        targetSdk = 35 // Ensure this is also set
+        minSdk = 26 // 28 is fine too, but 24 covers more phones
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -45,8 +44,17 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // --- ML Kit & Background Removal Dependencies ---
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+
+    // ADD THESE MISSING DEPENDENCIES FOR REMBG (TensorFlow):
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.7.3")
+
+    // --- UI & Image Handling ---
     implementation("io.coil-kt:coil-compose:2.5.0")
     implementation("androidx.compose.material:material-icons-extended:1.7.5")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
@@ -55,6 +63,7 @@ dependencies {
     implementation("com.vanniktech:android-image-cropper:4.6.0")
     implementation("androidx.compose.foundation:foundation")
 
+    // --- Standard Android Libraries ---
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

@@ -1,25 +1,18 @@
 package com.editpictures.ziadmq.ui.screens
 
-import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.BitmapShader
-import android.graphics.BlurMaskFilter
-import android.graphics.Canvas
-import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
-import android.graphics.Shader
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.magnifier
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.magnifier
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -28,17 +21,19 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -53,10 +48,11 @@ import java.io.FileOutputStream
 enum class EditorTool(val label: String, val icon: ImageVector) {
     PAN_ZOOM("Zoom", Icons.Default.PanTool),
     CROP("Crop", Icons.Default.Crop),
-    MAGIC("Auto Color", Icons.Default.Colorize),
-    ERASE("Eraser", Icons.Default.CleaningServices),
-    RESTORE("Restore", Icons.Default.Brush),
     AUTO("Auto AI", Icons.Default.AutoFixHigh),
+    MAGIC("Magic", Icons.Default.Colorize),
+    ERASE("Erase", Icons.Default.CleaningServices),
+    RESTORE("Restore", Icons.Default.Brush),
+    LASSO("Lasso", Icons.Default.Gesture),
     BG_CHECK("View", Icons.Default.Visibility)
 }
 
@@ -73,32 +69,36 @@ fun EditorScreen(
     val currentBitmap by viewModel.currentBitmap.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val context = LocalContext.current
-    val view = LocalView.current // For Haptic Feedback
+    val view = LocalView.current
 
-    // State
+    // Tools & Settings
     var selectedTool by remember { mutableStateOf(EditorTool.PAN_ZOOM) }
     var brushSize by remember { mutableFloatStateOf(60f) }
-    var tolerance by remember { mutableFloatStateOf(30f) }
-    var bgMode by remember { mutableIntStateOf(0) }
-    val bgColors = listOf(Color.DarkGray, Color.Black, Color.White)
+    var tolerance by remember { mutableFloatStateOf(40f) }
 
-    // Canvas Transform
+    // View State
+    var bgMode by remember { mutableIntStateOf(0) }
+    val bgColors = listOf(Color.DarkGray, Color.Black, Color.White, Color.Red, Color.Green)
+
+    // Transform State
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
-    // UX State
-    var magnifierCenter by remember { mutableStateOf(Offset.Unspecified) }
-    var showCursor by remember { mutableStateOf(false) }
-    val touchOffset = 150f // Higher offset so finger doesn't hide the magnifier
+    // Touch/Magnifier State
+    var touchPosition by remember { mutableStateOf(Offset.Unspecified) }
+    var showMagnifier by remember { mutableStateOf(false) }
 
+    // Lasso State
+    var lassoPath by remember { mutableStateOf<List<Offset>>(emptyList()) }
+
+    // Crop Launcher
     val cropLauncher = rememberLauncherForActivityResult(CropImageContract()) { result ->
         if (result.isSuccessful) {
             result.uriContent?.let { uri ->
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    val cropped = BitmapFactory.decodeStream(stream)
-                    viewModel.loadImage(cropped)
-                    scale = 1f; offset = Offset.Zero; selectedTool = EditorTool.PAN_ZOOM
-                }
+                val stream = context.contentResolver.openInputStream(uri)
+                val cropped = android.graphics.BitmapFactory.decodeStream(stream)
+                viewModel.loadImage(cropped)
+                scale = 1f; offset = Offset.Zero; selectedTool = EditorTool.PAN_ZOOM
             }
         }
     }
@@ -107,95 +107,53 @@ fun EditorScreen(
         containerColor = Color(0xFF121212),
         topBar = {
             CenterAlignedTopAppBar(
-                title = { },
+                title = { Text("Background Editor", color = Color.White) },
                 navigationIcon = {
-                    IconButton(onClick = onBackClick) {
-                        Icon(
-                            Icons.Default.ArrowBack,
-                            "Back",
-                            tint = Color.White
-                        )
-                    }
+                    IconButton(onClick = onBackClick) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
                 },
                 actions = {
-                    IconButton(onClick = {
-                        viewModel.undo()
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) // Feedback
-                    }) { Icon(Icons.Default.Undo, "Undo", tint = Color.White) }
-
-                    IconButton(onClick = {
-                        viewModel.redo()
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    }) { Icon(Icons.Default.Redo, "Redo", tint = Color.White) }
-
-                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = { viewModel.undo() }) { Icon(Icons.Default.Undo, "Undo", tint = Color.White) }
+                    IconButton(onClick = { viewModel.redo() }) { Icon(Icons.Default.Redo, "Redo", tint = Color.White) }
                     Button(
                         onClick = { currentBitmap?.let { onSaveClick(it) } },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFBB86FC)),
-                        contentPadding = PaddingValues(horizontal = 16.dp)
+                        modifier = Modifier.padding(end = 8.dp)
                     ) { Text("SAVE", color = Color.Black) }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = Color(
-                        0xFF121212
-                    )
-                )
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color(0xFF1E1E1E))
             )
         },
         bottomBar = {
-            Column(modifier = Modifier
-                .background(Color(0xFF1E1E1E))
-                .padding(bottom = 8.dp)) {
+            Column(modifier = Modifier.background(Color(0xFF1E1E1E)).padding(bottom = 8.dp)) {
+                // Sliders
                 if (selectedTool == EditorTool.ERASE || selectedTool == EditorTool.RESTORE) {
-                    SliderControl("Size", brushSize, 20f..200f) { brushSize = it }
+                    SliderControl("Brush Size", brushSize, 10f..200f) { brushSize = it }
                 }
                 if (selectedTool == EditorTool.MAGIC) {
                     SliderControl("Tolerance", tolerance, 1f..100f) { tolerance = it }
                 }
+                if (selectedTool == EditorTool.LASSO) {
+                    Text("Draw a loop to cut", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(start = 16.dp))
+                }
 
+                // Toolbar
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(8.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    EditorTool.values().forEach { tool ->
-                        ToolButton(
-                            tool = tool,
-                            isSelected = selectedTool == tool,
-                            onClick = {
-                                when (tool) {
-                                    EditorTool.AUTO -> {
-                                        viewModel.autoRemoveBackground()
-                                        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                    }
-
-                                    EditorTool.BG_CHECK -> bgMode = (bgMode + 1) % 3
-                                    EditorTool.CROP -> {
-                                        currentBitmap?.let { bmp ->
-                                            val uri = saveBitmapToCache(context, bmp)
-                                            val options = CropImageOptions(
-                                                toolbarColor = Color(0xFF121212).toArgb(),
-                                                toolbarTitleColor = Color.White.toArgb(),
-                                                activityMenuIconColor = Color.White.toArgb(),
-                                                outputRequestWidth = 1080,
-                                                outputRequestHeight = 1920,
-                                                outputRequestSizeOptions = CropImageView.RequestSizeOptions.RESIZE_INSIDE
-                                            )
-                                            cropLauncher.launch(
-                                                CropImageContractOptions(
-                                                    uri,
-                                                    options
-                                                )
-                                            )
-                                        }
-                                    }
-
-                                    else -> selectedTool = tool
-                                }
-                            }
-                        )
+                    ToolButton(EditorTool.PAN_ZOOM, selectedTool == EditorTool.PAN_ZOOM) { selectedTool = EditorTool.PAN_ZOOM }
+                    ToolButton(EditorTool.CROP, false) {
+                        currentBitmap?.let { bmp ->
+                            val uri = saveBitmapToCache(context, bmp)
+                            cropLauncher.launch(CropImageContractOptions(uri, CropImageOptions()))
+                        }
                     }
+                    ToolButton(EditorTool.AUTO, selectedTool == EditorTool.AUTO) { viewModel.autoRemoveBackground() }
+                    ToolButton(EditorTool.MAGIC, selectedTool == EditorTool.MAGIC) { selectedTool = EditorTool.MAGIC }
+                    ToolButton(EditorTool.LASSO, selectedTool == EditorTool.LASSO) { selectedTool = EditorTool.LASSO }
+                    ToolButton(EditorTool.ERASE, selectedTool == EditorTool.ERASE) { selectedTool = EditorTool.ERASE }
+                    ToolButton(EditorTool.RESTORE, selectedTool == EditorTool.RESTORE) { selectedTool = EditorTool.RESTORE }
+                    ToolButton(EditorTool.BG_CHECK, false) { bgMode = (bgMode + 1) % bgColors.size }
                 }
             }
         }
@@ -209,221 +167,183 @@ fun EditorScreen(
         ) {
             if (currentBitmap != null) {
                 val bitmap = currentBitmap!!
-                val original = viewModel.originalBitmap
 
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
-                        // REMOVED .magnifier() to fix your error
+                        // 1. ZOOM / PAN GESTURES
                         .pointerInput(Unit) {
                             detectTransformGestures { _, pan, zoom, _ ->
                                 if (selectedTool == EditorTool.PAN_ZOOM) {
-                                    scale = (scale * zoom).coerceIn(0.5f, 5.0f)
+                                    scale = (scale * zoom).coerceIn(0.5f, 5f)
                                     offset += pan
                                 }
                             }
                         }
-                        .pointerInput(selectedTool, brushSize, tolerance) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    val change = event.changes.firstOrNull() ?: continue
-
-                                    // Custom Logic for Cursor
-                                    if (event.changes.any { it.pressed }) {
-                                        magnifierCenter = change.position
-                                        showCursor = true
-                                    } else {
-                                        showCursor = false
-                                    }
-
-                                    // TOUCH DOWN
-                                    if (change.pressed && change.previousPressed.not()) {
-                                        if (selectedTool == EditorTool.ERASE || selectedTool == EditorTool.RESTORE) {
-                                            viewModel.saveToHistory()
-                                        }
-                                    }
-
-                                    // TOUCH UP (Magic Wand)
-                                    if (change.changedToUp() && selectedTool == EditorTool.MAGIC) {
-                                        val aimX = change.position.x
-                                        val aimY = change.position.y - touchOffset
-                                        val bmpX =
-                                            ((aimX - offset.x - size.width / 2) / scale + bitmap.width / 2).toInt()
-                                        val bmpY =
-                                            ((aimY - offset.y - size.height / 2) / scale + bitmap.height / 2).toInt()
-                                        viewModel.magicRemove(bmpX, bmpY, tolerance)
-                                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                                    }
-
-                                    // DRAG
-                                    if (event.changes.any { it.pressed }) {
-                                        val touchX = change.position.x
-                                        val touchY = change.position.y - touchOffset
-                                        val bmpX =
-                                            (touchX - offset.x - size.width / 2) / scale + bitmap.width / 2
-                                        val bmpY =
-                                            (touchY - offset.y - size.height / 2) / scale + bitmap.height / 2
-
-                                        if (selectedTool == EditorTool.ERASE || selectedTool == EditorTool.RESTORE) {
-                                            applyEdit(
-                                                touchX = bmpX, touchY = bmpY,
-                                                tool = selectedTool, brushSize = brushSize / scale,
-                                                bitmap = bitmap, original = original,
-                                                onUpdate = { viewModel.updateBitmap(it) }
-                                            )
-                                        }
-                                    }
+                        // 2. MAGIC WAND TAPS
+                        .pointerInput(selectedTool, tolerance) {
+                            if (selectedTool == EditorTool.MAGIC) {
+                                detectTapGestures { tapOffset ->
+                                    // FIXED: Using tapOffset and size.width/height directly
+                                    val (bmpX, bmpY) = screenToBitmap(
+                                        tapOffset,
+                                        size.width.toFloat(),
+                                        size.height.toFloat(),
+                                        offset,
+                                        scale,
+                                        bitmap.width.toFloat(),
+                                        bitmap.height.toFloat()
+                                    )
+                                    viewModel.magicRemove(bmpX, bmpY, tolerance)
+                                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                                 }
                             }
                         }
-                ) {
-                    val canvasWidth = size.width
-                    val canvasHeight = size.height
+                        // 3. DRAG GESTURES (Eraser, Restore, Lasso)
+                        .pointerInput(selectedTool, brushSize) {
+                            if (selectedTool in listOf(EditorTool.ERASE, EditorTool.RESTORE, EditorTool.LASSO)) {
+                                detectDragGestures(
+                                    onDragStart = { startOffset ->
+                                        showMagnifier = true
+                                        touchPosition = startOffset
+                                        if (selectedTool == EditorTool.LASSO) {
+                                            lassoPath = listOf(startOffset)
+                                        } else {
+                                            viewModel.saveToHistory()
+                                        }
+                                    },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        touchPosition = change.position
 
+                                        if (selectedTool == EditorTool.LASSO) {
+                                            lassoPath = lassoPath + change.position
+                                        } else {
+                                            // Eraser/Restore
+                                            // FIXED: Using size.width/height directly
+                                            val (bmpX, bmpY) = screenToBitmap(
+                                                change.position,
+                                                size.width.toFloat(),
+                                                size.height.toFloat(),
+                                                offset,
+                                                scale,
+                                                bitmap.width.toFloat(),
+                                                bitmap.height.toFloat()
+                                            )
+                                            viewModel.applyManualBrush(bmpX.toFloat(), bmpY.toFloat(), brushSize / scale, selectedTool == EditorTool.ERASE)
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        showMagnifier = false
+                                        touchPosition = Offset.Unspecified
+                                        if (selectedTool == EditorTool.LASSO) {
+                                            viewModel.applyLasso(lassoPath, scale, offset.x, offset.y, size.width, size.height)
+                                            lassoPath = emptyList()
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                ) {
+                    val canvasW = size.width
+                    val canvasH = size.height
+
+                    // --- DRAW IMAGE ---
                     with(drawContext.canvas.nativeCanvas) {
                         save()
-                        translate(canvasWidth / 2 + offset.x, canvasHeight / 2 + offset.y)
+                        translate(canvasW / 2 + offset.x, canvasH / 2 + offset.y)
                         scale(scale, scale)
                         translate(-bitmap.width / 2f, -bitmap.height / 2f)
                         drawBitmap(bitmap, 0f, 0f, null)
                         restore()
                     }
 
-                    // --- MANUAL MAGNIFIER (Custom Drawing) ---
-                    if (showCursor) {
-                        val targetX = magnifierCenter.x
-                        val targetY = magnifierCenter.y - touchOffset
+                    // --- DRAW LASSO PATH (Visual Feedback) ---
+                    if (selectedTool == EditorTool.LASSO && lassoPath.isNotEmpty()) {
+                        val path = Path().apply {
+                            moveTo(lassoPath.first().x, lassoPath.first().y)
+                            lassoPath.forEach { lineTo(it.x, it.y) }
+                        }
+                        drawPath(path, color = Color.Red, style = Stroke(width = 5f))
+                    }
 
-                        // 1. Draw Crosshair Target
-                        drawCircle(
-                            Color(0xFFBB86FC),
-                            radius = 20f,
-                            center = Offset(targetX, targetY),
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(3f)
-                        )
-                        drawCircle(Color.White, radius = 4f, center = Offset(targetX, targetY))
+                    // --- DRAW MAGNIFIER (The "Loupe") ---
+                    if (showMagnifier && touchPosition != Offset.Unspecified) {
+                        val magnifierSize = 250f
+                        val zoomLevel = 2f
+                        val magnifierCenter = touchPosition - Offset(0f, 200f)
+                        val magnifierRadius = magnifierSize / 2
 
-                        // 2. Draw Zoom Bubble (The Manual Loupe)
-                        // We draw a circle at the finger position containing the zoomed content
-                        val bubbleCenter =
-                            magnifierCenter - Offset(0f, touchOffset + 150f) // Bubble above cursor
-                        val bubbleRadius = 120f
+                        drawCircle(Color.White, radius = magnifierRadius + 4f, center = magnifierCenter)
+                        drawCircle(Color.Black, radius = magnifierRadius, center = magnifierCenter)
 
-                        // Draw Background for Bubble
-                        drawCircle(Color.Black, radius = bubbleRadius + 4f, center = bubbleCenter)
-                        drawCircle(Color.White, radius = bubbleRadius, center = bubbleCenter)
-
-                        // Clip to Circle for the Zoomed Image
-                        clipPath(androidx.compose.ui.graphics.Path().apply {
-                            addOval(
-                                androidx.compose.ui.geometry.Rect(
-                                    center = bubbleCenter,
-                                    radius = bubbleRadius
-                                )
-                            )
-                        }) {
-                            // Draw the bitmap again, but zoomed in at the target location
+                        clipPath(Path().apply { addOval(Rect(center = magnifierCenter, radius = magnifierRadius)) }) {
                             with(drawContext.canvas.nativeCanvas) {
                                 save()
-                                // Move to bubble center
-                                translate(bubbleCenter.x, bubbleCenter.y)
-                                // Scale up (2x zoom)
-                                scale(2f, 2f)
-                                // Move back so the 'target' pixel is at (0,0)
-                                translate(-targetX, -targetY)
+                                translate(magnifierCenter.x, magnifierCenter.y)
+                                scale(scale * zoomLevel, scale * zoomLevel)
 
-                                // Re-apply the main canvas transforms to match screen space
-                                translate(canvasWidth / 2 + offset.x, canvasHeight / 2 + offset.y)
-                                scale(scale, scale)
-                                translate(-bitmap.width / 2f, -bitmap.height / 2f)
+                                val (bmpX, bmpY) = screenToBitmap(
+                                    touchPosition,
+                                    canvasW,
+                                    canvasH,
+                                    offset,
+                                    scale,
+                                    bitmap.width.toFloat(),
+                                    bitmap.height.toFloat()
+                                )
+                                translate(-bmpX.toFloat() + bitmap.width/2f - bitmap.width/2f, -bmpY.toFloat())
+                                translate(-bitmap.width/2f, -bitmap.height/2f)
 
                                 drawBitmap(bitmap, 0f, 0f, null)
                                 restore()
                             }
+                            // Crosshair
+                            drawLine(Color.Red, start = magnifierCenter - Offset(20f, 0f), end = magnifierCenter + Offset(20f, 0f), strokeWidth = 2f)
+                            drawLine(Color.Red, start = magnifierCenter - Offset(0f, 20f), end = magnifierCenter + Offset(0f, 20f), strokeWidth = 2f)
                         }
                     }
                 }
             }
             if (isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center),
-                    color = Color(0xFFBB86FC)
-                )
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = Color(0xFFBB86FC))
             }
         }
     }
 }
 
-// ... Keep Helper Functions (saveBitmapToCache, applyEdit, ToolButton, SliderControl) same as before ...
+// --- HELPER FUNCTIONS ---
+
+fun screenToBitmap(touch: Offset, cW: Float, cH: Float, pan: Offset, scale: Float, bmpW: Float, bmpH: Float): Pair<Int, Int> {
+    val centeredX = touch.x - (cW / 2 + pan.x)
+    val centeredY = touch.y - (cH / 2 + pan.y)
+    val unscaledX = centeredX / scale
+    val unscaledY = centeredY / scale
+    val finalX = unscaledX + bmpW / 2
+    val finalY = unscaledY + bmpH / 2
+    return Pair(finalX.toInt(), finalY.toInt())
+}
+
 @Composable
-fun SliderControl(
-    label: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit
-) {
+fun SliderControl(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onChange: (Float) -> Unit) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = Color.LightGray, fontSize = 12.sp, modifier = Modifier.width(60.dp))
+        Text(label, color = Color.White, fontSize = 12.sp, modifier = Modifier.width(80.dp))
         Slider(
             value = value,
-            onValueChange = onValueChange,
+            onValueChange = onChange,
             valueRange = range,
-            colors = SliderDefaults.colors(
-                thumbColor = Color(0xFFBB86FC),
-                activeTrackColor = Color(0xFFBB86FC)
-            )
+            colors = SliderDefaults.colors(thumbColor = Color(0xFFBB86FC), activeTrackColor = Color(0xFFBB86FC))
         )
     }
-}
-
-fun saveBitmapToCache(context: Context, bitmap: Bitmap): android.net.Uri {
-    val file = File(context.cacheDir, "temp_edit_image.png")
-    FileOutputStream(file).use { out ->
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-    }
-    return android.net.Uri.fromFile(file)
-}
-
-fun applyEdit(
-    touchX: Float,
-    touchY: Float,
-    tool: EditorTool,
-    brushSize: Float,
-    bitmap: Bitmap,
-    original: Bitmap?,
-    onUpdate: (Bitmap) -> Unit
-) {
-    if (touchX < -brushSize || touchX > bitmap.width + brushSize || touchY < -brushSize || touchY > bitmap.height + brushSize) return
-    val canvas = Canvas(bitmap)
-    val paint = Paint()
-    paint.isAntiAlias = true
-    paint.style = Paint.Style.FILL
-    paint.maskFilter = BlurMaskFilter(brushSize * 0.1f, BlurMaskFilter.Blur.NORMAL)
-
-    if (tool == EditorTool.ERASE) {
-        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
-        canvas.drawCircle(touchX, touchY, brushSize / 2, paint)
-    } else if (tool == EditorTool.RESTORE && original != null) {
-        val shader = BitmapShader(original, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-        paint.shader = shader
-        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC)
-        canvas.drawCircle(touchX, touchY, brushSize / 2, paint)
-    }
-    onUpdate(bitmap)
 }
 
 @Composable
 fun ToolButton(tool: EditorTool, isSelected: Boolean, onClick: () -> Unit) {
     Column(
-        modifier = Modifier
-            .clickable(onClick = onClick)
-            .padding(4.dp),
+        modifier = Modifier.clickable(onClick = onClick).padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
@@ -431,24 +351,19 @@ fun ToolButton(tool: EditorTool, isSelected: Boolean, onClick: () -> Unit) {
                 .size(44.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(if (isSelected) Color(0xFFBB86FC) else Color.Transparent)
-                .border(
-                    1.dp,
-                    if (isSelected) Color.Transparent else Color.Gray,
-                    RoundedCornerShape(12.dp)
-                ),
+                .border(1.dp, if (isSelected) Color.Transparent else Color.Gray, RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = tool.icon,
-                contentDescription = tool.label,
-                tint = if (isSelected) Color.Black else Color.White
-            )
+            Icon(tool.icon, tool.label, tint = if (isSelected) Color.Black else Color.White)
         }
-        Text(
-            text = tool.label,
-            color = Color.White,
-            fontSize = 10.sp,
-            modifier = Modifier.padding(top = 4.dp)
-        )
+        Text(tool.label, color = Color.White, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
     }
+}
+
+fun saveBitmapToCache(context: android.content.Context, bitmap: android.graphics.Bitmap): android.net.Uri {
+    val file = java.io.File(context.cacheDir, "edit_temp.png")
+    java.io.FileOutputStream(file).use { out ->
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+    }
+    return android.net.Uri.fromFile(file)
 }
