@@ -1,8 +1,7 @@
 package com.editpictures.ziadmq.ui.screens
 
 import android.graphics.Bitmap
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffXfermode
+import android.graphics.Paint
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.Canvas
@@ -10,7 +9,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,12 +19,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.nativeCanvas
@@ -40,10 +36,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.canhub.cropper.CropImageContract
 import com.canhub.cropper.CropImageContractOptions
 import com.canhub.cropper.CropImageOptions
-import com.canhub.cropper.CropImageView
 import com.editpictures.ziadmq.ui.viewmodel.EditorViewModel
-import java.io.File
-import java.io.FileOutputStream
 
 enum class EditorTool(val label: String, val icon: ImageVector) {
     PAN_ZOOM("Zoom", Icons.Default.PanTool),
@@ -74,7 +67,7 @@ fun EditorScreen(
     // Tools & Settings
     var selectedTool by remember { mutableStateOf(EditorTool.PAN_ZOOM) }
     var brushSize by remember { mutableFloatStateOf(60f) }
-    var tolerance by remember { mutableFloatStateOf(40f) }
+    var tolerance by remember { mutableFloatStateOf(50f) }
 
     // View State
     var bgMode by remember { mutableIntStateOf(0) }
@@ -84,14 +77,14 @@ fun EditorScreen(
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
-    // Touch/Magnifier State
+    // Interactive UI State
     var touchPosition by remember { mutableStateOf(Offset.Unspecified) }
     var showMagnifier by remember { mutableStateOf(false) }
-
-    // Lasso State
     var lassoPath by remember { mutableStateOf<List<Offset>>(emptyList()) }
 
-    // Crop Launcher
+    // The vertical distance between finger and the Aim Circle
+    val aimOffset = Offset(0f, -250f)
+
     val cropLauncher = rememberLauncherForActivityResult(CropImageContract()) { result ->
         if (result.isSuccessful) {
             result.uriContent?.let { uri ->
@@ -132,9 +125,6 @@ fun EditorScreen(
                 if (selectedTool == EditorTool.MAGIC) {
                     SliderControl("Tolerance", tolerance, 1f..100f) { tolerance = it }
                 }
-                if (selectedTool == EditorTool.LASSO) {
-                    Text("Draw a loop to cut", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(start = 16.dp))
-                }
 
                 // Toolbar
                 Row(
@@ -171,7 +161,7 @@ fun EditorScreen(
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
-                        // 1. ZOOM / PAN GESTURES
+                        // 1. PAN / ZOOM
                         .pointerInput(Unit) {
                             detectTransformGestures { _, pan, zoom, _ ->
                                 if (selectedTool == EditorTool.PAN_ZOOM) {
@@ -180,35 +170,19 @@ fun EditorScreen(
                                 }
                             }
                         }
-                        // 2. MAGIC WAND TAPS
-                        .pointerInput(selectedTool, tolerance) {
-                            if (selectedTool == EditorTool.MAGIC) {
-                                detectTapGestures { tapOffset ->
-                                    // FIXED: Using tapOffset and size.width/height directly
-                                    val (bmpX, bmpY) = screenToBitmap(
-                                        tapOffset,
-                                        size.width.toFloat(),
-                                        size.height.toFloat(),
-                                        offset,
-                                        scale,
-                                        bitmap.width.toFloat(),
-                                        bitmap.height.toFloat()
-                                    )
-                                    viewModel.magicRemove(bmpX, bmpY, tolerance)
-                                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                                }
-                            }
-                        }
-                        // 3. DRAG GESTURES (Eraser, Restore, Lasso)
-                        .pointerInput(selectedTool, brushSize) {
-                            if (selectedTool in listOf(EditorTool.ERASE, EditorTool.RESTORE, EditorTool.LASSO)) {
+                        // 2. MAIN TOOL GESTURES
+                        .pointerInput(selectedTool, brushSize, tolerance) {
+                            if (selectedTool != EditorTool.PAN_ZOOM) {
                                 detectDragGestures(
                                     onDragStart = { startOffset ->
-                                        showMagnifier = true
+                                        if (selectedTool != EditorTool.LASSO) {
+                                            showMagnifier = true
+                                        }
                                         touchPosition = startOffset
+
                                         if (selectedTool == EditorTool.LASSO) {
                                             lassoPath = listOf(startOffset)
-                                        } else {
+                                        } else if (selectedTool != EditorTool.MAGIC) {
                                             viewModel.saveToHistory()
                                         }
                                     },
@@ -216,30 +190,44 @@ fun EditorScreen(
                                         change.consume()
                                         touchPosition = change.position
 
+                                        // For Erase/Restore, we still use the finger position (Direct Touch)
+                                        // You can change this to use aimOffset too if you want Erase to use the bubble.
+                                        val (bmpX, bmpY) = screenToBitmap(
+                                            change.position, size.width.toFloat(), size.height.toFloat(),
+                                            offset, scale, bitmap.width.toFloat(), bitmap.height.toFloat()
+                                        )
+
                                         if (selectedTool == EditorTool.LASSO) {
                                             lassoPath = lassoPath + change.position
-                                        } else {
-                                            // Eraser/Restore
-                                            // FIXED: Using size.width/height directly
-                                            val (bmpX, bmpY) = screenToBitmap(
-                                                change.position,
-                                                size.width.toFloat(),
-                                                size.height.toFloat(),
-                                                offset,
-                                                scale,
-                                                bitmap.width.toFloat(),
-                                                bitmap.height.toFloat()
-                                            )
+                                        } else if (selectedTool == EditorTool.ERASE || selectedTool == EditorTool.RESTORE) {
                                             viewModel.applyManualBrush(bmpX.toFloat(), bmpY.toFloat(), brushSize / scale, selectedTool == EditorTool.ERASE)
                                         }
                                     },
                                     onDragEnd = {
                                         showMagnifier = false
-                                        touchPosition = Offset.Unspecified
-                                        if (selectedTool == EditorTool.LASSO) {
+
+                                        if (selectedTool == EditorTool.MAGIC) {
+                                            // --- MAGIC TOOL LOGIC (CURSOR STYLE) ---
+                                            // 1. Calculate where the Aim Bubble was
+                                            val aimCenter = getClampedAimCenter(touchPosition, aimOffset, size.width.toFloat(), size.height.toFloat())
+
+                                            // 2. Convert THAT position to Bitmap coordinates
+                                            val (bmpX, bmpY) = screenToBitmap(
+                                                aimCenter,
+                                                size.width.toFloat(), size.height.toFloat(),
+                                                offset, scale, bitmap.width.toFloat(), bitmap.height.toFloat()
+                                            )
+
+                                            // 3. Perform action at the Aim Center
+                                            viewModel.magicRemove(bmpX, bmpY, tolerance)
+                                            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+
+                                        } else if (selectedTool == EditorTool.LASSO) {
                                             viewModel.applyLasso(lassoPath, scale, offset.x, offset.y, size.width, size.height)
                                             lassoPath = emptyList()
                                         }
+
+                                        touchPosition = Offset.Unspecified
                                     }
                                 )
                             }
@@ -258,7 +246,7 @@ fun EditorScreen(
                         restore()
                     }
 
-                    // --- DRAW LASSO PATH (Visual Feedback) ---
+                    // --- DRAW LASSO ---
                     if (selectedTool == EditorTool.LASSO && lassoPath.isNotEmpty()) {
                         val path = Path().apply {
                             moveTo(lassoPath.first().x, lassoPath.first().y)
@@ -267,24 +255,35 @@ fun EditorScreen(
                         drawPath(path, color = Color.Red, style = Stroke(width = 5f))
                     }
 
-                    // --- DRAW MAGNIFIER (The "Loupe") ---
-                    if (showMagnifier && touchPosition != Offset.Unspecified) {
+                    // --- DRAW AIM ZOOM (SNIPER SCOPE) ---
+                    if (showMagnifier && touchPosition != Offset.Unspecified && selectedTool != EditorTool.LASSO) {
                         val magnifierSize = 250f
-                        val zoomLevel = 2f
-                        val magnifierCenter = touchPosition - Offset(0f, 200f)
+                        val zoomLevel = 3f
                         val magnifierRadius = magnifierSize / 2
 
-                        drawCircle(Color.White, radius = magnifierRadius + 4f, center = magnifierCenter)
-                        drawCircle(Color.Black, radius = magnifierRadius, center = magnifierCenter)
+                        // Calculate the center of the bubble (Clamped to screen)
+                        val aimCenter = getClampedAimCenter(touchPosition, aimOffset, size.width, size.height)
 
-                        clipPath(Path().apply { addOval(Rect(center = magnifierCenter, radius = magnifierRadius)) }) {
+                        // 1. Draw Scope Borders
+                        drawCircle(Color.White, radius = magnifierRadius + 8f, center = aimCenter)
+                        drawCircle(Color.Black, radius = magnifierRadius + 2f, center = aimCenter)
+
+                        // 2. Draw Zoomed Content
+                        clipPath(Path().apply { addOval(Rect(center = aimCenter, radius = magnifierRadius)) }) {
+                            // Checkered background
+                            drawRect(Color.White, topLeft = aimCenter - Offset(magnifierRadius, magnifierRadius), size = androidx.compose.ui.geometry.Size(magnifierSize, magnifierSize))
+
                             with(drawContext.canvas.nativeCanvas) {
                                 save()
-                                translate(magnifierCenter.x, magnifierCenter.y)
+                                // Move to center of bubble
+                                translate(aimCenter.x, aimCenter.y)
+                                // Zoom
                                 scale(scale * zoomLevel, scale * zoomLevel)
 
+                                // --- CRITICAL FIX ---
+                                // We want the content under 'aimCenter' to be drawn at (0,0) relative to the translation.
                                 val (bmpX, bmpY) = screenToBitmap(
-                                    touchPosition,
+                                    aimCenter, // Use aimCenter, NOT touchPosition
                                     canvasW,
                                     canvasH,
                                     offset,
@@ -292,15 +291,24 @@ fun EditorScreen(
                                     bitmap.width.toFloat(),
                                     bitmap.height.toFloat()
                                 )
+
                                 translate(-bmpX.toFloat() + bitmap.width/2f - bitmap.width/2f, -bmpY.toFloat())
                                 translate(-bitmap.width/2f, -bitmap.height/2f)
 
-                                drawBitmap(bitmap, 0f, 0f, null)
+                                // Pixelated Paint for precise selecting
+                                val pixelPaint = Paint().apply {
+                                    isFilterBitmap = false
+                                    isAntiAlias = false
+                                }
+                                drawBitmap(bitmap, 0f, 0f, pixelPaint)
                                 restore()
                             }
-                            // Crosshair
-                            drawLine(Color.Red, start = magnifierCenter - Offset(20f, 0f), end = magnifierCenter + Offset(20f, 0f), strokeWidth = 2f)
-                            drawLine(Color.Red, start = magnifierCenter - Offset(0f, 20f), end = magnifierCenter + Offset(0f, 20f), strokeWidth = 2f)
+
+                            // 3. Crosshair (Target)
+                            val chSize = 25f
+                            drawLine(Color.Red, start = aimCenter - Offset(chSize, 0f), end = aimCenter + Offset(chSize, 0f), strokeWidth = 3f)
+                            drawLine(Color.Red, start = aimCenter - Offset(0f, chSize), end = aimCenter + Offset(0f, chSize), strokeWidth = 3f)
+                            drawCircle(Color.Red, radius = 3f, center = aimCenter)
                         }
                     }
                 }
@@ -313,6 +321,19 @@ fun EditorScreen(
 }
 
 // --- HELPER FUNCTIONS ---
+
+// Calculates where the Aim Bubble should be, keeping it on screen
+fun getClampedAimCenter(touch: Offset, offset: Offset, w: Float, h: Float): Offset {
+    var center = touch + offset
+    val margin = 130f // approx half magnifier size
+
+    if (center.x < margin) center = center.copy(x = margin)
+    if (center.x > w - margin) center = center.copy(x = w - margin)
+    if (center.y < margin) center = center.copy(y = margin)
+    if (center.y > h - margin) center = center.copy(y = h - margin)
+
+    return center
+}
 
 fun screenToBitmap(touch: Offset, cW: Float, cH: Float, pan: Offset, scale: Float, bmpW: Float, bmpH: Float): Pair<Int, Int> {
     val centeredX = touch.x - (cW / 2 + pan.x)

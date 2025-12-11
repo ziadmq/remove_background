@@ -17,7 +17,7 @@
             android:value="subject_segment" />
         <activity
             android:name="com.canhub.cropper.CropImageActivity"
-            android:theme="@style/Theme.AppCompat.NoActionBar"
+            android:theme="@style/Theme.AppCompat.Light.DarkActionBar"
             android:exported="true" />
         <activity
             android:name=".MainActivity"

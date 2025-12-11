@@ -41,11 +41,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val MAX_HISTORY = 10
 
     fun loadImage(bitmap: Bitmap) {
-        if (_currentBitmap.value == null) {
-            val mutableBmp = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-            _currentBitmap.value = mutableBmp
-            originalBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-        }
+        // Remove the null check to allow updating the image (e.g. after cropping)
+        val mutableBmp = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+        _currentBitmap.value = mutableBmp
+        // We also update the originalBitmap so tools like "Restore" work with the new crop
+        originalBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false)
     }
 
     fun saveToHistory() {
@@ -78,7 +78,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         saveToHistory()
         viewModelScope.launch {
             _isLoading.value = true
-            // Run on IO thread to prevent UI freezing
             val result = withContext(Dispatchers.IO) { imageProcessor.removeBackground(current) }
             _currentBitmap.value = result.copy(Bitmap.Config.ARGB_8888, true)
             _isLoading.value = false
@@ -106,19 +105,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 canvas.drawCircle(x, y, size / 2, paint)
             }
         }
-
         _currentBitmap.value = current
     }
 
-    // --- NEW TOOL: LASSO (Freehand Selection) ---
+    // --- LASSO ---
     fun applyLasso(points: List<Offset>, scale: Float, offsetX: Float, offsetY: Float, canvasWidth: Int, canvasHeight: Int) {
         val current = _currentBitmap.value ?: return
         saveToHistory()
-
         val canvas = Canvas(current)
         val path = Path()
 
-        // 1. Convert Screen Coordinates to Bitmap Coordinates
         if (points.isNotEmpty()) {
             val first = points.first()
             val startX = (first.x - (canvasWidth / 2 + offsetX)) / scale + current.width / 2
@@ -133,18 +129,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             path.close()
         }
 
-        // 2. Cut out the shape
         val paint = Paint().apply {
             isAntiAlias = true
             style = Paint.Style.FILL
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) // Removes pixels inside
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
         }
-
         canvas.drawPath(path, paint)
         _currentBitmap.value = current
     }
 
-    // --- MAGIC WAND (FLOOD FILL) ---
+    // --- MAGIC REMOVE (FLOOD FILL) ---
     fun magicRemove(startX: Int, startY: Int, tolerance: Float) {
         val bitmap = _currentBitmap.value ?: return
         if (startX < 0 || startX >= bitmap.width || startY < 0 || startY >= bitmap.height) return
@@ -196,7 +190,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             for (nIndex in neighbors) {
                 if (nIndex in pixels.indices && !visited[nIndex]) {
                     val nx = nIndex % width
-                    if (abs(nx - px) > 1) continue // Wrap check
+                    if (abs(nx - px) > 1) continue
 
                     val nColor = pixels[nIndex]
                     if (nColor != 0) {
