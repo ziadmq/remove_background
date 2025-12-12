@@ -12,8 +12,8 @@ android {
         applicationId = "com.editpictures.ziadmq"
         minSdk = 26 // 28 is fine too, but 24 covers more phones
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 6
+        versionName = "2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -56,6 +56,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("com.vanniktech:android-image-cropper:4.6.0")
     implementation("androidx.compose.foundation:foundation")
+    implementation("com.google.android.gms:play-services-ads:23.0.0")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

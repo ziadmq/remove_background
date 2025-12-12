@@ -11,12 +11,14 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
 import com.editpictures.ziadmq.ui.screens.EditorScreen
 import com.editpictures.ziadmq.ui.screens.HomeScreen
+import com.google.android.gms.ads.MobileAds
 import java.io.OutputStream
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        MobileAds.initialize(this) {}
 
         setContent {
             // State to hold the picked image
