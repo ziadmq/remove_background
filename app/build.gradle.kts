@@ -6,14 +6,14 @@ plugins {
 
 android {
     namespace = "com.editpictures.ziadmq"
-    compileSdk = 36 // CHANGE THIS from 36 to 35 to match targetSdk
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.editpictures.ziadmq"
-        minSdk = 26 // 28 is fine too, but 24 covers more phones
+        minSdk = 26 
         targetSdk = 35
-        versionCode = 6
-        versionName = "2.0"
+        versionCode = 7
+        versionName = "2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
