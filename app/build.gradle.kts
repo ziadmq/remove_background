@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "com.editpictures.ziadmq"
-        minSdk = 26 
+        minSdk = 26 // 28 is fine too, but 24 covers more phones
         targetSdk = 35
         versionCode = 7
         versionName = "2.1"

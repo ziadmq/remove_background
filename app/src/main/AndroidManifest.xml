@@ -5,6 +5,7 @@
 
     <application
         android:allowBackup="true"
+        android:extractNativeLibs="false"
         android:icon="@mipmap/ic_app"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_app"

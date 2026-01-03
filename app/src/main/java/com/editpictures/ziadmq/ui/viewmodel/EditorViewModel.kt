@@ -14,7 +14,7 @@ import kotlinx.coroutines.withContext
 import java.util.*
 import kotlin.math.abs
 
-// تعريف أنواع الخلفيات
+// تعريف أنواع الخلفيات المتاحة
 sealed class BackgroundType {
     object Transparent : BackgroundType()
     data class Color(val color: Int) : BackgroundType()
@@ -25,24 +25,26 @@ sealed class BackgroundType {
 class EditorViewModel(application: Application) : AndroidViewModel(application) {
 
     private val imageProcessor = ImageProcessor(application.applicationContext)
-
     private val _currentBitmap = MutableStateFlow<Bitmap?>(null)
     val currentBitmap = _currentBitmap.asStateFlow()
 
-    // حالة الخلفية المختارة
+    // حالات الميزات الجديدة
     private val _backgroundType = MutableStateFlow<BackgroundType>(BackgroundType.Transparent)
     val backgroundType = _backgroundType.asStateFlow()
 
-    var originalBitmap: Bitmap? = null
-        private set
+    private val _edgeSmoothing = MutableStateFlow(0f)
+    val edgeSmoothing = _edgeSmoothing.asStateFlow()
 
+    private val _shadowIntensity = MutableStateFlow(0f)
+    val shadowIntensity = _shadowIntensity.asStateFlow()
+
+    var originalBitmap: Bitmap? = null
     private val _isLoading = MutableStateFlow(false)
     val isLoading = _isLoading.asStateFlow()
 
     private val undoStack = Stack<Bitmap>()
     private val redoStack = Stack<Bitmap>()
     private val MAX_HISTORY = 10
-
     private var magicBrushTargetColor: Int = 0
 
     fun loadImage(bitmap: Bitmap) {
@@ -53,40 +55,53 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun setBackground(type: BackgroundType) {
-        _backgroundType.value = type
-    }
+    // دوال التحكم في الحالات
+    fun setBackground(type: BackgroundType) { _backgroundType.value = type }
+    fun updateEdgeSmoothing(value: Float) { _edgeSmoothing.value = value }
+    fun updateShadowIntensity(value: Float) { _shadowIntensity.value = value }
 
-    // دالة دمج الخلفية مع الصورة الأصلية عند الحفظ
+    // دالة دمج كل الطبقات (الخلفية + الظل + الصورة المنعمة) للحفظ النهائي
     fun getCompositedBitmap(): Bitmap? {
         val foreground = _currentBitmap.value ?: return null
-        val bg = _backgroundType.value
-
-        if (bg is BackgroundType.Transparent) return foreground
-
         val result = Bitmap.createBitmap(foreground.width, foreground.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(result)
 
-        when (bg) {
+        // 1. رسم الخلفية المختارة
+        when (val bg = _backgroundType.value) {
             is BackgroundType.Color -> canvas.drawColor(bg.color)
             is BackgroundType.Gradient -> {
-                val shader = LinearGradient(0f, 0f, 0f, result.height.toFloat(),
-                    bg.colors, null, Shader.TileMode.CLAMP)
-                val paint = Paint().apply { this.shader = shader }
-                canvas.drawRect(0f, 0f, result.width.toFloat(), result.height.toFloat(), paint)
+                val shader = LinearGradient(0f, 0f, 0f, result.height.toFloat(), bg.colors, null, Shader.TileMode.CLAMP)
+                canvas.drawRect(0f, 0f, result.width.toFloat(), result.height.toFloat(), Paint().apply { this.shader = shader })
             }
             is BackgroundType.Image -> {
                 val scaledBg = Bitmap.createScaledBitmap(bg.bitmap, result.width, result.height, true)
                 canvas.drawBitmap(scaledBg, 0f, 0f, null)
             }
-            else -> {}
+            else -> {} // شفاف
         }
 
-        canvas.drawBitmap(foreground, 0f, 0f, null)
+        // 2. رسم الظل الذكي
+        val sInt = _shadowIntensity.value
+        if (sInt > 0f) {
+            val shadowPaint = Paint().apply {
+                colorFilter = PorterDuffColorFilter(Color.BLACK, PorterDuff.Mode.SRC_IN)
+                alpha = (sInt * 3).toInt().coerceIn(0, 150)
+                maskFilter = BlurMaskFilter(sInt + 1f, BlurMaskFilter.Blur.NORMAL)
+            }
+            canvas.drawBitmap(foreground, 15f, 15f, shadowPaint)
+        }
+
+        // 3. رسم الصورة مع تنعيم الحواف
+        val smooth = _edgeSmoothing.value
+        val mainPaint = Paint().apply {
+            if (smooth > 0f) maskFilter = BlurMaskFilter(smooth, BlurMaskFilter.Blur.NORMAL)
+        }
+        canvas.drawBitmap(foreground, 0f, 0f, mainPaint)
+
         return result
     }
 
-    // --- العمليات الحالية (دون تغيير لضمان عدم الضرر) ---
+    // --- الوظائف الأساسية للمحرر ---
     fun saveToHistory() {
         _currentBitmap.value?.let { current ->
             if (undoStack.size >= MAX_HISTORY) undoStack.removeAt(0)
@@ -141,9 +156,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun initMagicBrush(x: Float, y: Float) {
         val bitmap = _currentBitmap.value ?: return
-        if (x >= 0 && x < bitmap.width && y >= 0 && y < bitmap.height) {
-            magicBrushTargetColor = bitmap.getPixel(x.toInt(), y.toInt())
-        }
+        if (x >= 0 && x < bitmap.width && y >= 0 && y < bitmap.height) magicBrushTargetColor = bitmap.getPixel(x.toInt(), y.toInt())
     }
 
     fun applyMagicBrush(x: Float, y: Float, size: Float, tolerance: Float) {
@@ -193,8 +206,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             }
             path.close()
         }
-        val paint = Paint().apply { isAntiAlias = true; style = Paint.Style.FILL; xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
-        canvas.drawPath(path, paint)
+        canvas.drawPath(path, Paint().apply { isAntiAlias = true; style = Paint.Style.FILL; xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) })
         _currentBitmap.value = current
     }
 
@@ -233,8 +245,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     val nColor = pixels[nIndex]
                     if (nColor != 0) {
                         val nRed = Color.red(nColor); val nGreen = Color.green(nColor); val nBlue = Color.blue(nColor)
-                        val dist = (tRed - nRed) * (tRed - nRed) + (tGreen - nGreen) * (tGreen - nGreen) + (tBlue - nBlue) * (tBlue - nBlue)
-                        if (dist <= threshold) { visited[nIndex] = true; queue.add(nIndex) }
+                        val diff = (tRed - nRed) * (tRed - nRed) + (tGreen - nGreen) * (tGreen - nGreen) + (tBlue - nBlue) * (tBlue - nBlue)
+                        if (diff <= threshold) { visited[nIndex] = true; queue.add(nIndex) }
                     }
                 }
             }
